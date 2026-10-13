@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -95,14 +96,22 @@ class Diagnoser:
                 {"role": "user", "content": self._build_prompt(findings, refs)},
             ],
         }
+        log.info("Asking %s to diagnose %d finding(s); this can take a few minutes (timeout %ss)",
+                 self.cfg.model, len(findings), self.cfg.timeout)
+        started = time.monotonic()
         try:
             async with httpx.AsyncClient(timeout=self.cfg.timeout) as client:
                 r = await client.post(f"{self.base}/api/chat", json=body)
                 r.raise_for_status()
             data = json.loads(r.json()["message"]["content"])
-        except (httpx.HTTPError, KeyError, TypeError, ValueError) as e:
-            log.warning("Ollama diagnosis failed, sending alerts without it: %s", e)
+        except httpx.TimeoutException:
+            log.warning("Ollama did not answer within %ss; continuing without a diagnosis. "
+                        "Raise ollama.timeout or use a smaller model.", self.cfg.timeout)
             return None
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as e:
+            log.warning("Ollama diagnosis failed, continuing without it: %s", e)
+            return None
+        log.info("Diagnosis received in %.0fs", time.monotonic() - started)
         if not isinstance(data, dict):
             log.warning("Ollama returned JSON that is not an object; ignoring it")
             return None
