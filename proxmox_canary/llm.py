@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -79,6 +80,36 @@ class Diagnoser:
                 return text
         return text[:MAX_PROMPT_CHARS]
 
+    async def _chat(self, body: dict[str, Any]) -> dict[str, Any] | None:
+        """One /api/chat call. Returns the parsed JSON object, or None (reason logged)."""
+        try:
+            async with httpx.AsyncClient(timeout=self.cfg.timeout) as client:
+                r = await client.post(f"{self.base}/api/chat", json=body)
+                r.raise_for_status()
+            resp = r.json()
+            content = resp["message"]["content"]
+        except httpx.TimeoutException:
+            log.warning("Ollama did not answer within %ss. Raise ollama.timeout or use a smaller model.",
+                        self.cfg.timeout)
+            return None
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as e:
+            log.warning("Ollama request failed: %s", e)
+            return None
+        data = extract_json_object(content if isinstance(content, str) else "")
+        if data is not None:
+            return data
+        prompt_tokens = resp.get("prompt_eval_count") or 0
+        if prompt_tokens and prompt_tokens >= self.cfg.num_ctx - 256:
+            log.warning("The prompt used %d of %d context tokens, leaving no room for an answer. "
+                        "Raise ollama.num_ctx (e.g. 16384) if the model supports it.",
+                        prompt_tokens, self.cfg.num_ctx)
+        thinking = (resp.get("message") or {}).get("thinking") or ""
+        log.warning("Ollama's reply had no JSON object (done_reason=%s, %d chars%s). Start of reply: %r",
+                    resp.get("done_reason"), len(content or ""),
+                    f", plus {len(thinking)} chars of thinking" if thinking else "",
+                    (content or "")[:300])
+        return None
+
     async def diagnose(
         self, findings: list[Finding], refs: dict[str, list[dict[str, str]]]
     ) -> tuple[str | None, dict[str, dict[str, Any]]] | None:
@@ -99,22 +130,16 @@ class Diagnoser:
         log.info("Asking %s to diagnose %d finding(s); this can take a few minutes (timeout %ss)",
                  self.cfg.model, len(findings), self.cfg.timeout)
         started = time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=self.cfg.timeout) as client:
-                r = await client.post(f"{self.base}/api/chat", json=body)
-                r.raise_for_status()
-            data = json.loads(r.json()["message"]["content"])
-        except httpx.TimeoutException:
-            log.warning("Ollama did not answer within %ss; continuing without a diagnosis. "
-                        "Raise ollama.timeout or use a smaller model.", self.cfg.timeout)
-            return None
-        except (httpx.HTTPError, KeyError, TypeError, ValueError) as e:
-            log.warning("Ollama diagnosis failed, continuing without it: %s", e)
+        data = await self._chat(body)
+        if data is None:
+            # Some models (e.g. those that emit a "thought" section) misbehave in Ollama's
+            # JSON mode. Try once more without it and pull the JSON out of the reply.
+            log.info("Retrying without JSON mode")
+            data = await self._chat({k: v for k, v in body.items() if k != "format"})
+        if data is None:
+            log.warning("No usable diagnosis from %s; continuing without it", self.cfg.model)
             return None
         log.info("Diagnosis received in %.0fs", time.monotonic() - started)
-        if not isinstance(data, dict):
-            log.warning("Ollama returned JSON that is not an object; ignoring it")
-            return None
 
         valid = {f.key for f in findings}
         out: dict[str, dict[str, Any]] = {}
@@ -133,3 +158,32 @@ class Diagnoser:
             }
         overview = str(data.get("overview") or "").strip() or None
         return overview, out
+
+
+_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
+_THOUGHT = re.compile(r"<\|channel\>.*?<channel\|>|<think>.*?</think>", re.S)
+
+
+def extract_json_object(text: str) -> dict[str, Any] | None:
+    """The first JSON object in a model reply, tolerating code fences, thought blocks and chatter."""
+    text = _THOUGHT.sub("", text).strip()
+    candidates = [text] + _FENCE.findall(text)
+    decoder = json.JSONDecoder()
+    for cand in candidates:
+        cand = cand.strip()
+        try:
+            obj = json.loads(cand)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict):
+            return obj
+        # Otherwise scan for an object starting at each "{".
+        for i, ch in enumerate(cand):
+            if ch == "{":
+                try:
+                    obj, _ = decoder.raw_decode(cand, i)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    return obj
+    return None

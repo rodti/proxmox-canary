@@ -162,6 +162,36 @@ def test_diagnose_failures_return_none(ollama, mode):
     assert asyncio.run(Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b")).diagnose(findings(), {})) is None
 
 
+@pytest.mark.parametrize("mode", ["fenced", "thought"])
+def test_diagnose_tolerates_wrapped_json(ollama, mode):
+    ollama.mode = mode
+    overview, diag = asyncio.run(Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b")).diagnose(findings(), {}))
+    assert overview.startswith("Disk sdb is failing") and diag
+    assert len(ollama.chats) == 1  # no retry needed
+
+
+def test_diagnose_retries_without_json_mode(ollama, caplog):
+    caplog.set_level("INFO", logger="proxmox_canary")
+    ollama.mode = "json_mode_empty"
+    overview, diag = asyncio.run(Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b")).diagnose(findings(), {}))
+    assert diag and [c.get("format") for c in ollama.chats] == ["json", None]
+    assert "no JSON object" in caplog.text and "chars of thinking" in caplog.text
+    assert "Retrying without JSON mode" in caplog.text
+
+
+def test_diagnose_reports_full_context(ollama, caplog):
+    ollama.mode = "ctx_full"
+    assert asyncio.run(Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b")).diagnose(findings(), {})) is None
+    assert "Raise ollama.num_ctx" in caplog.text and "done_reason=length" in caplog.text
+    assert len(ollama.chats) == 2
+
+
+def test_garbage_reply_is_logged(ollama, caplog):
+    ollama.mode = "garbage"
+    assert asyncio.run(Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b")).diagnose(findings(), {})) is None
+    assert "Start of reply: 'Sure! Here is my analysis" in caplog.text
+
+
 def test_diagnose_timeout_and_unreachable(ollama):
     ollama.mode = "slow"
     assert asyncio.run(Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b", timeout=1)).diagnose(findings(), {})) is None

@@ -249,7 +249,7 @@ class FakeOllama:
 
     def __init__(self, models=("qwen2.5:7b",)):
         self.models = list(models)
-        self.mode = "ok"  # ok | garbage | not_object | error | slow | hallucinate
+        self.mode = "ok"  # ok | garbage | not_object | error | slow | hallucinate | fenced | thought | json_mode_empty | ctx_full
         self.chats: list[dict] = []
         self.server = _Server(self._handle)
         self.url = f"http://127.0.0.1:{self.server.port}"
@@ -276,10 +276,16 @@ class FakeOllama:
             if self.mode == "slow":
                 time.sleep(3)
             content = self.answer(req)
+            message = {"role": "assistant", "content": content}
+            extra = {}
+            if self.mode == "json_mode_empty" and req.get("format") == "json":
+                message = {"role": "assistant", "content": "", "thinking": "Let me look at the disks first..."}
+            if self.mode == "ctx_full":
+                message["content"] = ""
+                extra = {"prompt_eval_count": req["options"]["num_ctx"], "done_reason": "length"}
             return send_json(h, 200, {
                 "model": req["model"], "created_at": "2026-10-13T08:00:00Z",
-                "message": {"role": "assistant", "content": content},
-                "done": True, "done_reason": "stop",
+                "message": message, "done": True, "done_reason": "stop", **extra,
             })
         return send_json(h, 404, {"error": "not found"})
 
@@ -329,7 +335,12 @@ class FakeOllama:
             })
         if self.mode == "hallucinate":
             items.append({"key": "made-up:key", "root_cause": "invented", "fix": "x", "sources": []})
-        return json.dumps({"overview": "Disk sdb is failing; it explains the pool, backup and journal alerts.", "findings": items})
+        answer = json.dumps({"overview": "Disk sdb is failing; it explains the pool, backup and journal alerts.", "findings": items})
+        if self.mode == "fenced":
+            return "Here is the diagnosis:\n```json\n" + answer + "\n```\nLet me know if you need more."
+        if self.mode == "thought":
+            return "<|channel>thought\nThe pool {tank} is degraded...<channel|>" + answer
+        return answer
 
 
 # ----------------------------------------------------------- search + web pages
