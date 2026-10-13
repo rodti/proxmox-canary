@@ -1,6 +1,7 @@
 """Turn a snapshot into findings. Plain thresholds and trends; no LLM involved."""
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -8,6 +9,7 @@ from typing import Any
 
 from .collector import Snapshot
 from .config import Config
+from .issues import classify, is_lan, issue_key
 from .state import State
 
 CRITICAL, WARNING, INFO = "critical", "warning", "info"
@@ -98,14 +100,156 @@ def clean_log_line(line: str) -> str:
     return _PID.sub("", msg).strip()[:400]
 
 
+_VARIABLE = re.compile(
+    r"\b[\w.+-]+@[\w.-]+\b"  # user@realm, e-mail
+    r"|(?<![\w:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:])"  # IPv6
+    r"|\buser[ =]\S+"  # user names
+    r"|'[^']*'|\"[^\"]*\""  # quoted values
+    r"|0x[0-9a-f]+|\d+",  # numbers: sectors, counters, IPv4, ports
+    re.IGNORECASE,
+)
+
+
 def group_key(msg: str) -> str:
-    """Looser key for dedupe: numbers vary (sectors, counters) but the problem is the same."""
-    return re.sub(r"0x[0-9a-f]+|\d+", "#", msg.lower())
+    """Looser key for dedupe: addresses, names and numbers vary but the problem is the same."""
+    return _VARIABLE.sub("#", msg.lower())
 
 
 @lru_cache(maxsize=8)
 def _compile(patterns: tuple[str, ...]) -> list[re.Pattern]:
     return [re.compile(p, re.IGNORECASE) for p in patterns]
+
+
+# ------------------------------------------------------- recognised log issues
+
+_CAP = 500  # distinct sources/usernames kept per issue
+_FIELDS = ("nodes", "src", "user", "via", "proc")
+
+
+def _bump(issue: dict[str, Any], fld: str, value: str, n: int) -> None:
+    if not value:
+        return
+    counter = issue[fld]
+    if value in counter or len(counter) < _CAP:
+        counter[value] = counter.get(value, 0) + n
+    else:
+        issue.setdefault("overflow", {})[fld] = True
+
+
+def _update_log_issues(snap: Snapshot, cfg: Config, state: State) -> dict[str, list[str]]:
+    """Fold recognised lines into a staged copy of state.log_issues; return the other lines."""
+    issues = copy.deepcopy(state.log_issues)
+    generic: dict[str, list[str]] = {}
+    # Per issue and tier: line count and per-field counters for this check.
+    batch: dict[str, dict[int, dict[str, Any]]] = {}
+    for node, lines in snap.log_errors.items():
+        for line in lines:
+            m = classify(line)
+            if m is None:
+                generic.setdefault(node, []).append(line)
+                continue
+            key = issue_key(m, node)
+            issue = issues.get(key)
+            if issue is None:
+                issue = issues[key] = {
+                    "kind": m.kind.id, "node": node, "dev": m.dev, "count": 0,
+                    "first": snap.since or snap.taken_at, "last": snap.taken_at,
+                    "samples": [], **{f: {} for f in _FIELDS},
+                }
+            tier = batch.setdefault(key, {}).setdefault(m.tier, {"n": 0, **{f: {} for f in _FIELDS}})
+            tier["n"] += 1
+            for fld, value in (("nodes", node), ("src", m.src), ("user", m.user), ("via", m.via), ("proc", m.proc)):
+                if value:
+                    tier[fld][value] = tier[fld].get(value, 0) + 1
+            issue["samples"] = (issue["samples"] + [clean_log_line(line)])[-5:]
+
+    for key, tiers in batch.items():
+        issue = issues[key]
+        # One event logs several lines; count the most complete kind of line, not all of them.
+        n = {t: tiers[t]["n"] if t in tiers else 0 for t in (1, 2, 3)}
+        chosen = 1 if n[1] and n[1] >= n[2] else 2 if n[2] else 3
+        issue["count"] += n[chosen]
+        issue["last"] = snap.taken_at
+        for fld in _FIELDS:
+            for value, c in tiers[chosen][fld].items():
+                _bump(issue, fld, value, c)
+            # Names that only appear in other kinds of line (e.g. a PAM username) still count once.
+            for t, data in tiers.items():
+                if t != chosen:
+                    for value in data[fld]:
+                        if value not in tiers[chosen][fld] and value not in issue[fld]:
+                            _bump(issue, fld, value, 1)
+
+    quiet_s = cfg.logs.quiet_minutes * 60
+    state.staged_log_issues = {k: v for k, v in issues.items() if snap.taken_at - v["last"] <= quiet_s}
+    return generic
+
+
+def _span(seconds: float) -> str:
+    minutes = max(1, round(seconds / 60))
+    if minutes < 90:
+        return f"in the last {minutes} min"
+    h, m = divmod(minutes, 60)
+    return f"over the last {h} h {m} min" if m else f"over the last {h} h"
+
+
+def _top(counter: dict[str, int], n: int = 5, lan: bool = False, overflow: bool = False) -> str:
+    items = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+    parts = [f"{k} ({'LAN, ' if lan and is_lan(k) else ''}{v})" for k, v in items[:n]]
+    rest = len(items) - n
+    if rest > 0 or overflow:
+        parts.append(f"and {rest if rest > 0 else 0}{'+' if overflow else ''} more")
+    return ", ".join(parts)
+
+
+def _and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _issue_finding(key: str, issue: dict[str, Any], cfg: Config, now: float) -> Finding | None:
+    kind, count, node = issue["kind"], issue["count"], issue["node"]
+    span = _span(now - issue["first"])
+    samples = list(issue["samples"])
+    overflow = issue.get("overflow", {})
+    if kind == "auth":
+        if count < cfg.logs.failed_login_threshold:
+            return None
+        srcs, users = issue["src"], issue["user"]
+        nodes = sorted(issue["nodes"])
+        via = sorted(issue["via"], key=lambda v: -issue["via"][v])
+        lines = [
+            f"About {count} failed login attempt(s) {span}"
+            + (f" via {_and(via)}" if via else "")
+            + (f", from {len(srcs)}{'+' if overflow.get('src') else ''} address(es)" if srcs else "")
+            + (f" against {len(users)}{'+' if overflow.get('user') else ''} username(s)" if users else "")
+            + "."
+        ]
+        if srcs:
+            lines.append(f"Sources: {_top(srcs, lan=True, overflow=overflow.get('src', False))}")
+            if all(is_lan(s) for s in srcs):
+                lines.append("All attempts came from your local network.")
+        if users:
+            lines.append(f"Usernames tried: {_top(users, overflow=overflow.get('user', False))}")
+        return Finding(key, WARNING, f"Repeated failed logins on {_and(nodes)}", "\n".join(lines),
+                       context=samples)
+    if kind == "disk-io":
+        dev = issue.get("dev") or "?"
+        return Finding(
+            key, CRITICAL, f"Disk I/O errors on /dev/{dev} ({node})",
+            f"{count} I/O error(s) {span}. The disk, its cable or its controller may be failing. "
+            f"Check `smartctl -a /dev/{dev}` on {node} and make sure backups are current.",
+            context=samples, lookup_messages=samples[-1:],
+        )
+    if kind == "oom":
+        procs = issue["proc"]
+        return Finding(
+            key, CRITICAL, f"Out-of-memory kills on {node}",
+            f"The kernel killed {count} process(es) {span} because {node} ran out of memory"
+            + (f": {_top(procs)}." if procs else ".")
+            + " A killed `kvm` process means a VM was stopped.",
+            context=samples,
+        )
+    return None
 
 
 # --------------------------------------------------------------------- rules
@@ -261,9 +405,17 @@ def evaluate(snap: Snapshot, cfg: Config, state: State) -> list[Finding]:
             dedupe_keys=[key],
         ))
 
-    # Journal errors (one-off events, deduped per message for renotify_hours)
+    # Journal: recognised issues (failed logins, disk I/O errors, OOM kills) become one
+    # ongoing alert each, however many addresses, usernames or sectors are involved.
+    generic = _update_log_issues(snap, cfg, state)
+    for key, issue in sorted((state.staged_log_issues or {}).items()):
+        f = _issue_finding(key, issue, cfg, snap.taken_at)
+        if f:
+            out.append(f)
+
+    # Everything else: one batch per node and check, deduped per message for renotify_hours.
     crit_patterns = _compile(tuple(cfg.logs.critical))
-    for node, lines in snap.log_errors.items():
+    for node, lines in generic.items():
         groups: dict[str, list[str]] = {}
         for line in lines:
             msg = clean_log_line(line)

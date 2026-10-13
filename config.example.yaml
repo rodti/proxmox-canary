@@ -52,7 +52,9 @@ thresholds:
 
 logs:
   enabled: true
-  max_lines_per_node: 2000
+  max_lines_per_node: 2000      # other error lines kept per node and check
+  quiet_minutes: 60             # failed logins / disk I/O / OOM issues clear after this long without a new one
+  failed_login_threshold: 5     # attempts (within quiet_minutes) before failed logins alert
   # include / critical / ignore are case-insensitive Python regexes.
   # Leave them out to use the built-in defaults; set them to replace the defaults.
   # ignore:

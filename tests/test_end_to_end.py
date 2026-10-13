@@ -85,7 +85,7 @@ def test_full_check_with_lookup_and_diagnosis(pve, ollama, web, make_cfg):
     r = asyncio.run(m.check())
     keys = {f.key.split(":")[0] for f in r.new}
     assert keys == {"node-down", "node-cpu", "node-mem", "guest-cpu", "storage-full", "storage-unavailable",
-                    "zfs", "disk-health", "disk-wear", "task", "logs"}
+                    "zfs", "disk-health", "disk-wear", "task", "logs", "disk-io"}
     # Searches were scrubbed of node/guest/storage names, IPs and users.
     assert web.searches, "expected web lookups"
     for q in web.searches:
@@ -95,8 +95,9 @@ def test_full_check_with_lookup_and_diagnosis(pve, ollama, web, make_cfg):
     assert len(web.searches) <= cfg.lookup.max_lookups_per_check
     # The diagnosis covers every non-info finding and only cites pages it was given.
     assert set(r.diagnoses) == {f.key for f in r.new if f.severity != "info"}
-    log_key = next(f.key for f in r.new if f.key.startswith("logs:"))
-    assert r.diagnoses[log_key]["sources"] and all(s["url"].startswith(web.base) for s in r.diagnoses[log_key]["sources"])
+    io_key = next(f.key for f in r.new if f.key.startswith("disk-io:"))
+    assert io_key == "disk-io:pve1:sdb"
+    assert r.diagnoses[io_key]["sources"] and all(s["url"].startswith(web.base) for s in r.diagnoses[io_key]["sources"])
     # The prompt fed to the model has the scraped forum text but not page chrome or scripts.
     prompt = ollama.chats[-1]["messages"][1]["content"]
     assert "bad SATA cable" in prompt and "tracking" not in prompt

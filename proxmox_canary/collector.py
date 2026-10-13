@@ -18,6 +18,7 @@ from proxmoxer import ProxmoxAPI
 from proxmoxer.core import ResourceException
 
 from .config import Config
+from .issues import classify
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class CollectorCancelled(Exception):
 @dataclass
 class Snapshot:
     taken_at: float
+    since: float = 0.0  # start of the window logs and tasks were read from
     nodes: list[dict[str, Any]] = field(default_factory=list)
     guests: list[dict[str, Any]] = field(default_factory=list)
     storage: list[dict[str, Any]] = field(default_factory=list)
@@ -103,7 +105,7 @@ class Collector:
         """Gather everything needed for one check. `since` bounds logs and tasks."""
         if self._cancelled.is_set():
             raise CollectorCancelled("collect")
-        snap = Snapshot(taken_at=time.time())
+        snap = Snapshot(taken_at=time.time(), since=since)
         try:
             resources = self.api.cluster.resources.get()
         except Exception as e:
@@ -160,12 +162,21 @@ class Collector:
                 f"journal on {node}", lambda: nd.journal.get(since=int(since)), [], "Sys.Syslog"
             )
             # The reader returns a journal cursor as the first and last entries.
-            matched = [
-                l for l in lines
-                if isinstance(l, str) and not _CURSOR.match(l) and self._is_error_line(l)
-            ]
+            generic: list[str] = []
+            recognised: list[str] = []
+            for line in lines:
+                if not isinstance(line, str) or _CURSOR.match(line):
+                    continue
+                if any(p.search(line) for p in self._ignore):
+                    continue
+                if classify(line):
+                    # Kept in full (up to a sanity cap): a brute-force run is counted, not sampled.
+                    recognised.append(line)
+                elif any(p.search(line) for p in self._include):
+                    generic.append(line)
+            matched = recognised[-50_000:] + generic[-self.cfg.logs.max_lines_per_node :]
             if matched:
-                snap.log_errors[node] = matched[-self.cfg.logs.max_lines_per_node :]
+                snap.log_errors[node] = matched
 
         if self.cfg.check_updates:
             pkgs = self._optional(f"update list on {node}", lambda: nd.apt.update.get(), None, "Sys.Modify")

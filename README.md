@@ -23,12 +23,24 @@ explains what the rules found and cites the pages it used, so it can't invent al
 | ZFS pools | any state other than ONLINE |
 | Disks | SMART health failing; SSD life remaining ≤ 10% |
 | Tasks | backups, migrations, snapshots etc. that failed or finished with warnings |
-| Journal | error lines (critical patterns such as I/O errors, OOM kills and call traces raise the severity) |
+| Failed logins | repeated failed SSH, Proxmox web UI, sudo or su logins (5+ attempts by default) |
+| Disk I/O errors | kernel I/O errors on a disk, one alert per disk |
+| Out-of-memory kills | processes (including VMs) killed because a node ran out of RAM |
+| Journal | other error lines (critical patterns such as call traces raise the severity) |
 | Updates | pending package updates (info only, off by default; see below) |
 
 Ongoing conditions alert once, remind every `renotify_hours`, and post a
 "✅ All good" message when they clear. Repeated log messages are grouped
 and only re-reported after `renotify_hours`.
+
+Failed logins, disk I/O errors and out-of-memory kills are each treated as **one
+issue**, however many lines, addresses, usernames or sectors are involved. A brute-force
+run from 200 addresses trying 50 usernames is a single alert. That alert counts the
+attempts, lists the top sources (marking any on your LAN) and the usernames tried, and
+keeps those numbers up to date in each reminder. The issue clears after
+`logs.quiet_minutes` (default 60) without a new occurrence. Failed logins only alert
+once `logs.failed_login_threshold` attempts (default 5) have built up in that window,
+so a mistyped password doesn't.
 
 ## Setup
 

@@ -27,6 +27,11 @@ class State:
         self.lookups: dict[str, dict[str, Any]] = {}
         # When the canary itself started failing; set once "Oops" has been posted.
         self.broken_since: float | None = None
+        # Recognised log issues (failed logins, disk I/O errors...) still considered ongoing.
+        self.log_issues: dict[str, dict[str, Any]] = {}
+        # This check's updated copy; becomes log_issues only once the alerts are delivered,
+        # so a retried check doesn't count the same log lines twice.
+        self.staged_log_issues: dict[str, dict[str, Any]] | None = None
         self._samples: dict[str, deque] = {}
 
     # ------------------------------------------------------------- persistence
@@ -43,6 +48,7 @@ class State:
                 s.recent = data.get("recent", {})
                 s.lookups = data.get("lookups", {})
                 s.broken_since = data.get("broken_since")
+                s.log_issues = data.get("log_issues", {})
             except (OSError, ValueError) as e:
                 log.warning("Could not read state file %s, starting fresh: %s", s.path, e)
         return s
@@ -57,6 +63,7 @@ class State:
             "recent": self.recent,
             "lookups": self.lookups,
             "broken_since": self.broken_since,
+            "log_issues": self.log_issues,
         }
         # A failed save must not raise: the alerts have already gone out by now, and the
         # in-memory state is still correct, so the service keeps running without repeats.
@@ -154,6 +161,9 @@ class State:
             if f.key in notified_keys:
                 for dk in f.dedupe_keys:
                     self.recent[dk] = now
+        if self.staged_log_issues is not None:
+            self.log_issues = self.staged_log_issues
+            self.staged_log_issues = None
         if checked_at is not None:
             self.last_check = checked_at
         self.save()

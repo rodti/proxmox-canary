@@ -103,6 +103,12 @@ class LogConfig:
     include: list[str] = field(default_factory=lambda: list(DEFAULT_LOG_INCLUDE))
     critical: list[str] = field(default_factory=lambda: list(DEFAULT_LOG_CRITICAL))
     ignore: list[str] = field(default_factory=lambda: list(DEFAULT_LOG_IGNORE))
+    # Recognised issues (failed logins, disk I/O errors, OOM kills) stay one open alert
+    # while they continue, and clear after this long without a new occurrence.
+    quiet_minutes: int = 60
+    # Failed logins only alert once this many attempts have been seen in that window,
+    # so a mistyped password doesn't.
+    failed_login_threshold: int = 5
 
 
 @dataclass

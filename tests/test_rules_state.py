@@ -161,16 +161,16 @@ def test_failed_tasks(cfg):
 def test_log_grouping_dedupe_and_severity(cfg):
     st = State(None)
     lines = [
-        "Oct 03 09:40:01 pve1 kernel: blk_update_request: I/O error, dev sdb, sector 123456",
-        "Oct 03 09:40:02 pve1 kernel: blk_update_request: I/O error, dev sdb, sector 999999",
-        "Oct 03 09:41:00 pve1 pvedaemon[1234]: authentication failure; rhost=::ffff:10.0.0.5 user=root@pam",
+        "Oct 03 09:40:01 pve1 kernel: EXT4-fs error (device dm-1): ext4_find_entry:1455: inode #2: comm ls",
+        "Oct 03 09:40:02 pve1 kernel: EXT4-fs error (device dm-1): ext4_find_entry:1455: inode #9: comm ls",
+        "Oct 03 09:41:00 pve1 pvestatd[1234]: storage 'nas' is not online",
     ]
     f = evaluate(snap(log_errors={"pve1": lines}), cfg, st)
     assert len(f) == 1
     log = f[0]
     assert log.severity == "critical" and log.kind == "event"
     assert log.title == "3 error line(s) in the journal on pve1"
-    assert log.context[0].startswith("2× kernel: blk_update_request: I/O error")
+    assert log.context[0].startswith("2× kernel: EXT4-fs error")
     assert len(log.dedupe_keys) == 2
     # Mark as notified: the same messages are suppressed, a new one still alerts.
     for k in log.dedupe_keys:
@@ -179,6 +179,12 @@ def test_log_grouping_dedupe_and_severity(cfg):
     new = evaluate(snap(log_errors={"pve1": lines + ["Oct 03 09:45:00 pve1 cron[1]: job failed"]}), cfg, st)
     assert len(new) == 1 and new[0].severity == "warning" and "1 more" not in new[0].detail
     assert "2 more already reported" in new[0].detail
+
+
+def test_generic_grouping_ignores_addresses_and_names():
+    a = "pveproxy: failed login from 2001:db8::1 for 'alice' user=alice@pve port 4431"
+    b = "pveproxy: failed login from fe80::abcd for 'bob' user=bob@pam port 53"
+    assert group_key(a) == group_key(b)
 
 
 def test_clean_and_group():
