@@ -133,7 +133,11 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-**Directly:**
+**Directly** (Python 3.9 or newer; 3.11+ recommended):
+
+On macOS, the built-in `python3` is 3.9 and uses LibreSSL, which makes urllib3 print a
+`NotOpenSSLWarning` at startup. It works, but a newer Python avoids the warning:
+`brew install python@3.12`, then create the venv with `python3.12 -m venv .venv`.
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate

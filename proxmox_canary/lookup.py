@@ -148,7 +148,7 @@ class WebLookup:
         ) as client:
             texts = await asyncio.gather(*(self.fetch_text(client, r["url"]) for r in picked))
         sources: list[dict[str, Any]] = []
-        for r, text in zip(picked, texts, strict=True):
+        for r, text in zip(picked, texts):  # same length: one text per picked result
             sources.append({"title": r["title"][:200], "url": r["url"], "excerpt": text or r.get("snippet", "")})
         # Unread results still help as snippets.
         for r in results[self.cfg.pages_to_read :]:

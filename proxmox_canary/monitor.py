@@ -40,7 +40,15 @@ class Monitor:
         self.collector = collector or Collector(cfg)
         self.diagnoser = Diagnoser(cfg.ollama)
         self.lookup = WebLookup(cfg.lookup) if cfg.lookup.enabled else None
-        self.lock = asyncio.Lock()
+        self._lock: asyncio.Lock | None = None
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        # Created on first use, inside the running event loop: on Python 3.9 a Lock made
+        # outside a loop binds to a default loop and fails under asyncio.run().
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     def _private_terms(self, snap: Snapshot | None) -> set[str]:
         terms = {self.cfg.proxmox.host, self.cfg.proxmox.user, self.cfg.proxmox.token_name}
