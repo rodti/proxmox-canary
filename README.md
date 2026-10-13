@@ -151,6 +151,19 @@ Run `--once` first. It checks the Proxmox token, Ollama and web lookup without
 touching Discord, and treats a single sample as "sustained" so you see everything
 that is currently over a threshold.
 
+**With a process manager** such as [pyker](https://github.com/mrvi0/pyker) or pm2, point it at
+`run.py`. It runs the canary from the project folder, so `config.yaml` and the state
+file are found wherever the manager starts it. Use absolute paths:
+
+```bash
+cd ~/git/proxmox-canary
+pyker start proxmox-canary "$PWD/run.py" --venv "$PWD/.venv" --auto-restart
+pyker logs proxmox-canary -f      # follow the log
+pyker list                        # status
+pyker restart proxmox-canary      # after a git pull or config change
+pyker stop proxmox-canary
+```
+
 ## Web lookups and privacy
 
 For journal errors and failed tasks, the canary searches the error text (up to
