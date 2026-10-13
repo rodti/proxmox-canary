@@ -14,13 +14,13 @@ proxmox:
   timeout: 15
 
 ollama:
-  url: http://192.168.1.50:11434   # Ollama on another machine (needs OLLAMA_HOST=0.0.0.0 there)
+  url: http://localhost:11434      # or another machine on your network (set OLLAMA_HOST=0.0.0.0 there)
   model: qwen2.5:7b                # any chat model you have pulled, e.g. llama3.1:8b, qwen2.5:14b
   timeout: 300                     # seconds; first call after idle includes model load time
   temperature: 0.2
   num_ctx: 12288                   # context window; lookups make prompts long, so keep this ≥ 8192
   keep_alive: 10m
-  think: false                     # let thinking models (gemma4, qwen3...) reason first; slower, and
+  think: false                     # let thinking models (qwen3, deepseek-r1...) reason first; slower, and
                                    # needs a larger num_ctx or they run out of room before answering
 
 discord:

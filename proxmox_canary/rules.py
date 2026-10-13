@@ -9,7 +9,7 @@ from typing import Any
 
 from .collector import Snapshot
 from .config import Config
-from .issues import classify, is_lan, issue_key
+from .issues import GUESSABLE, classify, is_lan, issue_key, successful_login
 from .state import State
 
 CRITICAL, WARNING, INFO = "critical", "warning", "info"
@@ -136,18 +136,47 @@ def _bump(issue: dict[str, Any], fld: str, value: str, n: int) -> None:
         issue.setdefault("overflow", {})[fld] = True
 
 
-def _update_log_issues(snap: Snapshot, cfg: Config, state: State) -> dict[str, list[str]]:
-    """Fold recognised lines into a staged copy of state.log_issues; return the other lines."""
+def _update_log_issues(
+    snap: Snapshot, cfg: Config, state: State
+) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
+    """Fold recognised lines into a staged copy of state.log_issues.
+
+    Returns the unrecognised lines per node, and successful logins from addresses
+    that had already failed at least failed_login_threshold times.
+    """
     issues = copy.deepcopy(state.log_issues)
     generic: dict[str, list[str]] = {}
     # Per issue and tier: line count and per-field counters for this check.
     batch: dict[str, dict[int, dict[str, Any]]] = {}
+    # Failed logins per address: earlier checks still in the quiet window, plus this
+    # check's lines so far (tier 1 and tier 2 separately, as one attempt logs both).
+    earlier = dict(issues.get("auth", {}).get("src", {}))
+    so_far: dict[str, list[int]] = {}
+    recent_lines: dict[str, list[str]] = {}
+    breaches: dict[tuple[str, str, str], dict[str, Any]] = {}
     for node, lines in snap.log_errors.items():
         for line in lines:
+            login = successful_login(line)
+            if login:
+                t = so_far.get(login.src, [0, 0])
+                failures = earlier.get(login.src, 0) + max(t)
+                if (login.method.startswith(GUESSABLE)
+                        and failures >= cfg.logs.failed_login_threshold
+                        and (node, login.src, login.user) not in breaches):
+                    breaches[(node, login.src, login.user)] = {
+                        "node": node, "src": login.src, "user": login.user, "method": login.method,
+                        "failures": failures,
+                        "context": recent_lines.get(login.src, [])[-3:] + [clean_log_line(line)],
+                    }
+                continue
             m = classify(line)
             if m is None:
                 generic.setdefault(node, []).append(line)
                 continue
+            if m.kind.id == "auth" and m.src and m.tier in (1, 2):
+                so_far.setdefault(m.src, [0, 0])[m.tier - 1] += 1
+                recent_lines.setdefault(m.src, []).append(clean_log_line(line))
+                del recent_lines[m.src][:-3]
             key = issue_key(m, node)
             issue = issues.get(key)
             if issue is None:
@@ -182,7 +211,22 @@ def _update_log_issues(snap: Snapshot, cfg: Config, state: State) -> dict[str, l
 
     quiet_s = cfg.logs.quiet_minutes * 60
     state.staged_log_issues = {k: v for k, v in issues.items() if snap.taken_at - v["last"] <= quiet_s}
-    return generic
+    return generic, list(breaches.values())
+
+
+def _breach_finding(b: dict[str, Any]) -> Finding:
+    node, src, user = b["node"], b["src"], b["user"]
+    where = f"{src} (on your LAN)" if is_lan(src) else src
+    return Finding(
+        f"breach:{node}:{src}:{user}", CRITICAL,
+        f"Successful login after failed attempts: {user} on {node}",
+        f"{where} made about {b['failures']} failed login attempt(s), then logged in to {node} "
+        f"as {user} with a password over SSH.\n"
+        "If this wasn't you, assume the account is compromised: end the session (`who`, then "
+        f"`pkill -KILL -u {user}`), change the password, check `~/.ssh/authorized_keys`, cron jobs "
+        "and new users, and block the address. If it was you, no action is needed.",
+        kind="event", context=b["context"], dedupe_keys=[f"breach:{node}|{src}|{user}"],
+    )
 
 
 def _span(seconds: float) -> str:
@@ -407,7 +451,12 @@ def evaluate(snap: Snapshot, cfg: Config, state: State) -> list[Finding]:
 
     # Journal: recognised issues (failed logins, disk I/O errors, OOM kills) become one
     # ongoing alert each, however many addresses, usernames or sectors are involved.
-    generic = _update_log_issues(snap, cfg, state)
+    generic, breaches = _update_log_issues(snap, cfg, state)
+    for b in breaches:
+        f = _breach_finding(b)
+        # One alert per address, account and node a week, however often it logs in.
+        if not state.recently_notified(f.dedupe_keys[0], snap.taken_at, 7 * 86400):
+            out.append(f)
     for key, issue in sorted((state.staged_log_issues or {}).items()):
         f = _issue_finding(key, issue, cfg, snap.taken_at)
         if f:

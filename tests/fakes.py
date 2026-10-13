@@ -110,7 +110,7 @@ def journal_lines(node: str, since: int) -> list[str]:
         f"{t} {node} kernel: blk_update_request: I/O error, dev sdb, sector 987654 op 0x0:(READ) flags 0x0",
         f"{t} {node} pvestatd[1234]: status update time (8.214 seconds)",
         f"{t} {node} pveproxy[2201]: proxy detected vanished client connection",
-        f"{t} {node} systemd[1]: Failed to start pve-guests.service - PVE guests (from 192.168.1.10, user rod@pam).",
+        f"{t} {node} systemd[1]: Failed to start pve-guests.service - PVE guests (from 192.168.1.10, user alice@pam).",
         f"{t} {node} pvedaemon[4410]: <root@pam> starting task UPID:{node}:00001234:0ABC:65F0:vzdump::root@pam:",
         "s=8e7a1c2b3d4e5f60;i=1a3f;b=0f1e2d3c;m=a1;t=5f0b;x=deadbeefcafe",
     ]

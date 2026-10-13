@@ -12,12 +12,12 @@ from proxmox_canary.rules import Finding
 # ------------------------------------------------------------------ scrubbing
 
 def test_scrub_removes_private_details():
-    line = ("pvedaemon: authentication failure; rhost=::ffff:192.168.1.23 user=rod@pam msg=bad "
+    line = ("pvedaemon: authentication failure; rhost=::ffff:192.168.1.23 user=alice@pam msg=bad "
             "mac 52:54:00:12:34:56 uuid 0b5c4e2a-1d3f-4b6a-9c8d-7e6f5a4b3c2d on pve1 vm plex "
-            "path /home/rod/secret.txt task UPID:pve1:0001:abc:vzdump::root@pam: sector 123456 email a.b@ex.com "
+            "path /home/alice/secret.txt task UPID:pve1:0001:abc:vzdump::root@pam: sector 123456 email a.b@ex.com "
             "ipv6 fe80::1ff:fe23:4567:890a hash 9f86d081884c7d65")
     out = scrub(line, {"pve1", "plex"}, [])
-    for secret in ("192.168", "rod@pam", "52:54:00", "0b5c4e2a", "pve1", "plex", "/home/rod", "UPID", "123456",
+    for secret in ("192.168", "alice@pam", "52:54:00", "0b5c4e2a", "pve1", "plex", "/home/alice", "UPID", "123456",
                    "a.b@ex.com", "fe80", "9f86d081884c7d65"):
         assert secret not in out, secret
     assert "authentication failure" in out

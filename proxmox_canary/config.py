@@ -33,7 +33,7 @@ class OllamaConfig:
     temperature: float = 0.2
     num_ctx: int = 12288
     keep_alive: str = "10m"
-    # Thinking models (gemma4, qwen3, deepseek-r1...) can spend the whole context window
+    # Thinking models (qwen3, deepseek-r1 and similar) can spend the whole context window
     # reasoning and never answer. Off by default; ignored by models that cannot think.
     think: bool = False
 

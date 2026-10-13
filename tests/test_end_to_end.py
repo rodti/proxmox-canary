@@ -89,7 +89,7 @@ def test_full_check_with_lookup_and_diagnosis(pve, ollama, web, make_cfg):
     # Searches were scrubbed of node/guest/storage names, IPs and users.
     assert web.searches, "expected web lookups"
     for q in web.searches:
-        for secret in ("pve1", "192.168", "rod@pam", "123456", "nas", "UPID"):
+        for secret in ("pve1", "192.168", "alice@pam", "123456", "nas", "UPID"):
             assert secret not in q, (secret, q)
     assert any("I/O error" in q for q in web.searches)
     assert len(web.searches) <= cfg.lookup.max_lookups_per_check

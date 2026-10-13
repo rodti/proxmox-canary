@@ -18,7 +18,7 @@ from proxmoxer import ProxmoxAPI
 from proxmoxer.core import ResourceException
 
 from .config import Config
-from .issues import classify
+from .issues import classify, successful_login
 
 log = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ class Collector:
                     continue
                 if any(p.search(line) for p in self._ignore):
                     continue
-                if classify(line):
+                if classify(line) or successful_login(line):
                     # Kept in full (up to a sanity cap): a brute-force run is counted, not sampled.
                     recognised.append(line)
                 elif any(p.search(line) for p in self._include):

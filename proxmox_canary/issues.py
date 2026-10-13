@@ -155,6 +155,31 @@ def classify(line: str) -> Match | None:
     return None
 
 
+_ACCEPTED = re.compile(
+    r"\bAccepted (?P<method>password|keyboard-interactive(?:/pam)?|publickey|gssapi-with-mic|hostbased) "
+    r"for (?P<user>\S+) from " + _ADDR,
+    re.IGNORECASE,
+)
+# Credentials a brute force can guess. A key login after failures is the normal case of
+# a client trying several keys, so it never raises the alarm on its own.
+GUESSABLE = ("password", "keyboard-interactive")
+
+
+@dataclass
+class Login:
+    src: str
+    user: str
+    method: str
+
+
+def successful_login(line: str) -> Login | None:
+    """A successful SSH login, e.g. 'Accepted password for root from 203.0.113.5 port 22 ssh2'."""
+    m = _ACCEPTED.search(line)
+    if not m:
+        return None
+    return Login(normalize_source(m.group("src")), m.group("user"), m.group("method").lower())
+
+
 def issue_key(match: Match, node: str) -> str:
     if match.kind is DISK_IO:
         return f"{match.kind.id}:{node}:{match.dev}"

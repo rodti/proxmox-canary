@@ -55,11 +55,11 @@ def cfg(make_cfg):
     (f"{T} n sshd[1]: Connection closed by authenticating user root 203.0.113.7 port 5 [preauth]", "auth", "203.0.113.7", "root", "SSH"),
     (f"{T} n sshd[1]: error: maximum authentication attempts exceeded for root from 203.0.113.8 port 5 ssh2 [preauth]", "auth", "203.0.113.8", "root", "SSH"),
     (f"{T} n sshd[1]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.9  user=root", "auth", "203.0.113.9", "root", "SSH"),
-    (f"{T} n sudo[1]: pam_unix(sudo:auth): authentication failure; logname=rod uid=1000 euid=0 tty=/dev/pts/0 ruser=rod rhost=  user=rod", "auth", "", "rod", "sudo"),
+    (f"{T} n sudo[1]: pam_unix(sudo:auth): authentication failure; logname=alice uid=1000 euid=0 tty=/dev/pts/0 ruser=alice rhost=  user=alice", "auth", "", "alice", "sudo"),
     (f"{T} n unix_chkpwd[1]: password check failed for user (root)", "auth", "", "root", ""),
     (f"{T} n pvedaemon[4410]: authentication failure; rhost=::ffff:192.168.1.20 user=root@pam msg=Authentication failure",
      "auth", "192.168.1.20", "root@pam", "Proxmox web UI/API"),
-    (f"{T} n su[1]: FAILED SU (to root) rod on pts/0", "auth", "", "root", "su"),
+    (f"{T} n su[1]: FAILED SU (to root) alice on pts/0", "auth", "", "root", "su"),
 ])
 def test_classify_logins(line, kind, src, user, via):
     m = classify(line)
@@ -247,3 +247,91 @@ def test_service_posts_one_alert_for_a_brute_force(pve, discord, make_cfg):
     run_service_until(cfg, lambda: calls() >= 4)
     titles = [e["title"] for e in embeds(discord)]
     assert titles.count("🟡 Repeated failed logins on pve1") == 1, titles
+
+
+# ------------------------------------------------- login after failed attempts
+
+def accepted(node, ip, user, method="password"):
+    return f"{T} {node} sshd-session[900]: Accepted {method} for {user} from {ip} port 51000 ssh2"
+
+
+def test_password_login_after_brute_force_is_danger(cfg):
+    st, t0 = State(None), time.time()
+    lines = []
+    for i in range(6):
+        lines += ssh_attempt("pve1", "203.0.113.66", "root", 40000 + i)
+    lines.append(accepted("pve1", "203.0.113.66", "root"))
+    f, new, *_ = run(st, cfg, {"pve1": lines}, t0)
+    b = next(x for x in new if x.key.startswith("breach:"))
+    assert b.key == "breach:pve1:203.0.113.66:root" and b.severity == "critical" and b.kind == "event"
+    assert b.title == "Successful login after failed attempts: root on pve1"
+    assert b.detail.startswith("203.0.113.66 made about 6 failed login attempt(s), then logged in to pve1 as root with a password over SSH.")
+    assert b.context[-1] == "sshd-session: Accepted password for root from 203.0.113.66 port 51000 ssh2"
+    assert len(b.context) == 4
+    # The failed logins are still their own (single) alert.
+    assert {x.key for x in new} == {"auth", b.key}
+    # It logs in again: no second alert for the same address, account and node.
+    f, new, *_ = run(st, cfg, {"pve1": [accepted("pve1", "203.0.113.66", "root")]}, t0 + 300)
+    assert not any(x.key.startswith("breach:") for x in new)
+
+
+def test_failures_from_earlier_checks_count(cfg):
+    st, t0 = State(None), time.time()
+    run(st, cfg, {"pve1": brute_force("pve1", 5 * 21)}, t0)  # every address fails 5 times
+    f, new, *_ = run(st, cfg, {"pve2": [accepted("pve2", "::ffff:198.51.100.9", "admin", "keyboard-interactive/pam")]}, t0 + 300)
+    b = [x for x in new if x.key.startswith("breach:")]
+    assert [x.key for x in b] == ["breach:pve2:198.51.100.9:admin"]
+    assert "about 5 failed" in b[0].detail
+
+
+@pytest.mark.parametrize("case", ["key_login", "below_threshold", "success_first", "other_address", "issue_expired"])
+def test_no_false_danger(cfg, case):
+    st, t0 = State(None), time.time()
+    fails = []
+    for i in range(6):
+        fails += ssh_attempt("pve1", "192.168.1.20", "root", 40000 + i)
+    if case == "key_login":  # a client trying several keys, or a typo then a key
+        lines = fails + [accepted("pve1", "192.168.1.20", "root", "publickey")]
+    elif case == "below_threshold":  # a couple of typos, then the right password
+        lines = fails[:6] + [accepted("pve1", "192.168.1.20", "root")]
+    elif case == "success_first":  # logged in, then later typos in the same check
+        lines = [accepted("pve1", "192.168.1.20", "root")] + fails
+    elif case == "other_address":
+        lines = fails + [accepted("pve1", "192.168.1.99", "root")]
+    else:  # failures long ago: the auth issue already cleared
+        run(st, cfg, {"pve1": fails}, t0)
+        run(st, cfg, {}, t0 + cfg.logs.quiet_minutes * 60 + 600)
+        lines = [accepted("pve1", "192.168.1.20", "root")]
+        t0 += cfg.logs.quiet_minutes * 60 + 900
+    f, *_ = run(st, cfg, {"pve1": lines}, t0)
+    assert not any(x.key.startswith("breach:") for x in f)
+
+
+def test_lan_breach_says_so(cfg):
+    lines = []
+    for i in range(5):
+        lines += ssh_attempt("pve1", "192.168.1.20", "root", 40000 + i)
+    f, *_ = run(State(None), cfg, {"pve1": lines + [accepted("pve1", "192.168.1.20", "root")]}, time.time())
+    assert next(x for x in f if x.key.startswith("breach:")).detail.startswith("192.168.1.20 (on your LAN) made about 5")
+
+
+def test_collector_keeps_successful_logins(make_cfg):
+    routes = {"cluster/resources": [{"type": "node", "node": "pve1", "status": "online"}],
+              "nodes/pve1/journal": [accepted("pve1", "203.0.113.5", "root"), f"{T} pve1 cron[1]: job ran"]}
+    lines = Collector(make_cfg(), api=_Api(routes)).collect(time.time() - 60).log_errors["pve1"]
+    assert lines == [accepted("pve1", "203.0.113.5", "root")]
+
+
+def test_service_breach_is_danger_with_ping(pve, discord, make_cfg):
+    from test_end_to_end import run_service_until
+    lines = []
+    for i in range(8):
+        lines += ssh_attempt("pve1", "203.0.113.66", "root", 40000 + i)
+    pve.scenario["journal"]["pve1"] = lines + [accepted("pve1", "203.0.113.66", "root")]
+    cfg = make_cfg(pve=pve, discord=discord)
+    cfg.poll_interval_seconds = 1
+    calls = lambda: len([r for r in pve.server.requests if "cluster/resources" in r[1]])  # noqa: E731
+    run_service_until(cfg, lambda: calls() >= 3)
+    titles = [e["title"] for m in discord.messages for e in m.get("embeds", [])]
+    assert titles.count("🔴 Successful login after failed attempts: root on pve1") == 1, titles
+    assert discord.messages[0]["content"].startswith("<@&555>\n🚨 **Danger!**")

@@ -24,6 +24,7 @@ explains what the rules found and cites the pages it used, so it can't invent al
 | Disks | SMART health failing; SSD life remaining ≤ 10% |
 | Tasks | backups, migrations, snapshots etc. that failed or finished with warnings |
 | Failed logins | repeated failed SSH, Proxmox web UI, sudo or su logins (5+ attempts by default) |
+| Suspicious logins | a successful SSH password login from an address that had just been failing to log in |
 | Disk I/O errors | kernel I/O errors on a disk, one alert per disk |
 | Out-of-memory kills | processes (including VMs) killed because a node ran out of RAM |
 | Journal | other error lines (critical patterns such as call traces raise the severity) |
@@ -41,6 +42,11 @@ keeps those numbers up to date in each reminder. The issue clears after
 `logs.quiet_minutes` (default 60) without a new occurrence. Failed logins only alert
 once `logs.failed_login_threshold` attempts (default 5) have built up in that window,
 so a mistyped password doesn't.
+
+If an address that has made at least that many failed attempts then logs in over SSH
+with a password, that's a likely break-in, so it raises a separate 🚨 **Danger!** alert
+(and pings `mention_on_critical`). Key-based logins never trigger it, since a client
+offering several keys looks the same. It fires once per address, account and node a week.
 
 ## Setup
 
@@ -63,19 +69,22 @@ The pending-updates check is off by default because Proxmox only lets a token li
 updates with `Sys.Modify`, which also allows changing node settings. If you want it
 anyway, add `Sys.Modify` to the role and set `check_updates: true`.
 
-### 2. Ollama on the other machine
+### 2. Ollama
+
+Ollama can run on the same machine as the canary or on another one on your network.
 
 ```bash
 ollama pull qwen2.5:7b
-# Make Ollama listen on the network, e.g. for systemd:
-#   systemctl edit ollama  →  [Service] Environment="OLLAMA_HOST=0.0.0.0"
+# If the canary runs on a different machine, make Ollama listen on the network,
+# e.g. for systemd:  systemctl edit ollama  →  [Service] Environment="OLLAMA_HOST=0.0.0.0"
 ```
 
-On a Mac, run Ollama natively rather than in Docker so it can use the GPU. Any
-7–8B instruct model works; a 14B model gives noticeably better diagnoses if you
-have the memory. If Ollama is down, alerts still go out, just without the diagnosis.
+Any 7–8B instruct model works; a 14B model gives noticeably better diagnoses if you
+have the memory. A GPU makes it much faster; if you run Ollama in a container, make
+sure the container can use it. If Ollama is down, alerts still go out, just without
+the diagnosis.
 
-Thinking models (gemma4, qwen3, deepseek-r1 and similar) are asked not to think
+Thinking models (qwen3, deepseek-r1 and similar) are asked not to think
 (`ollama.think: false`, the default). Otherwise they can use the whole context window
 reasoning and never write an answer. Models that can't think ignore the setting.
 
@@ -151,10 +160,6 @@ docker compose logs -f
 
 **Directly** (Python 3.9 or newer; 3.11+ recommended):
 
-On macOS, the built-in `python3` is 3.9 and uses LibreSSL, which makes urllib3 print a
-`NotOpenSSLWarning` at startup. It works, but a newer Python avoids the warning:
-`brew install python@3.12`, then create the venv with `python3.12 -m venv .venv`.
-
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
@@ -167,18 +172,36 @@ Run `--once` first. It checks the Proxmox token, Ollama and web lookup without
 touching Discord, and treats a single sample as "sustained" so you see everything
 that is currently over a threshold.
 
-**With a process manager** such as [pyker](https://github.com/mrvi0/pyker) or pm2, point it at
-`run.py`. It runs the canary from the project folder, so `config.yaml` and the state
-file are found wherever the manager starts it. Use absolute paths:
+**With a process manager**, point it at `run.py` with the venv's Python. `run.py` runs
+the canary from the project folder, so `config.yaml` and the state file are found
+wherever the manager starts it. Use absolute paths. For example, with
+[pyker](https://github.com/mrvi0/pyker):
 
 ```bash
-cd ~/git/proxmox-canary
+cd /path/to/proxmox-canary
 pyker start proxmox-canary "$PWD/run.py" --venv "$PWD/.venv" --auto-restart
 pyker logs proxmox-canary -f      # follow the log
-pyker list                        # status
 pyker restart proxmox-canary      # after a git pull or config change
-pyker stop proxmox-canary
 ```
+
+or as a systemd service (`/etc/systemd/system/proxmox-canary.service`):
+
+```ini
+[Unit]
+Description=proxmox-canary
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/path/to/proxmox-canary/.venv/bin/python /path/to/proxmox-canary/run.py
+Restart=on-failure
+User=canary
+
+[Install]
+WantedBy=multi-user.target
+```
+
+then `systemctl enable --now proxmox-canary` and `journalctl -u proxmox-canary -f`.
 
 ## Web lookups and privacy
 
