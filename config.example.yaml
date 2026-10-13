@@ -1,0 +1,72 @@
+# proxmox-canary configuration
+# Copy to config.yaml and fill in the CHANGE_ME values.
+# Secrets can instead come from the environment:
+#   CANARY_PROXMOX_TOKEN_VALUE, CANARY_DISCORD_TOKEN, CANARY_DISCORD_CHANNEL_ID,
+#   CANARY_OLLAMA_URL, CANARY_OLLAMA_MODEL, CANARY_BRAVE_API_KEY
+
+proxmox:
+  host: pve.lan                 # any node in the cluster (hostname or IP, no https://)
+  port: 8006
+  user: canary@pve              # the read-only user (see README)
+  token_name: monitor
+  token_value: CHANGE_ME        # the token secret UUID
+  verify_ssl: false             # true if the node has a trusted certificate
+  timeout: 15
+
+ollama:
+  url: http://192.168.1.50:11434   # Ollama on another machine (needs OLLAMA_HOST=0.0.0.0 there)
+  model: qwen2.5:7b                # any chat model you have pulled, e.g. llama3.1:8b, qwen2.5:14b
+  timeout: 300                     # seconds; first call after idle includes model load time
+  temperature: 0.2
+  num_ctx: 12288                   # context window; lookups make prompts long, so keep this ≥ 8192
+  keep_alive: 10m
+
+discord:
+  token: CHANGE_ME              # bot token (Developer Portal → your app → Bot → Reset Token)
+  channel_id: 0                 # right-click the channel → Copy Channel ID (needs Developer Mode)
+  mention_on_critical: ""       # e.g. "<@&123456789012345678>" to ping a role on critical alerts
+
+poll_interval_seconds: 300
+renotify_hours: 6               # remind about conditions still active after this long
+initial_lookback_minutes: 60    # how far back the first run reads logs and tasks
+check_updates: false            # listing updates needs Sys.Modify, which is NOT read-only (see README)
+send_resolved: true             # post "All good" when a problem clears
+ignore_storage: []              # e.g. [usb-backup] for storage that is often offline on purpose
+ignore_guests: []               # VMIDs to skip for CPU/RAM checks, e.g. [105, 210]
+state_file: canary-state.json   # /data/canary-state.json in Docker
+
+thresholds:
+  node_cpu_pct: 90
+  node_mem_pct: 90
+  node_rootfs_pct: 85
+  guest_cpu_pct: 95
+  guest_mem_pct: 95
+  storage_warn_pct: 80
+  storage_crit_pct: 90
+  storage_days_to_full: 7       # warn if growth would fill storage within this many days
+  storage_trend_window_hours: 6
+  disk_life_remaining_pct: 10   # SSD life left (the Proxmox UI shows 100 minus this as "wearout")
+  sustained_samples: 3          # CPU/RAM must be high for this many checks in a row
+
+logs:
+  enabled: true
+  max_lines_per_node: 2000
+  # include / critical / ignore are case-insensitive Python regexes.
+  # Leave them out to use the built-in defaults; set them to replace the defaults.
+  # ignore:
+  #   - "proxy detected vanished client connection"
+  #   - "some noisy message you don't care about"
+
+lookup:
+  enabled: true                 # search the web for log errors and failed tasks
+  provider: ddgs                # ddgs (DuckDuckGo, no key) | searxng | brave
+  searxng_url: ""               # e.g. http://searxng.lan:8080 (enable the json format in its settings)
+  brave_api_key: ""
+  query_prefix: proxmox
+  results_per_query: 5
+  pages_to_read: 2              # pages fetched and read in full per query
+  max_chars_per_page: 2500
+  max_lookups_per_check: 3      # new searches per cycle; results are cached
+  cache_days: 7
+  timeout: 15
+  redact: []                    # extra regexes to strip from log text before searching

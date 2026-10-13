@@ -1,0 +1,13 @@
+services:
+  proxmox-canary:
+    build: .
+    container_name: proxmox-canary
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - canary-data:/data
+    # Keep secrets out of config.yaml if you prefer:
+    # env_file: .env
+
+volumes:
+  canary-data:

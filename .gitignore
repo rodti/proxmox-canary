@@ -1,0 +1,6 @@
+config.yaml
+.env
+canary-state.json
+__pycache__/
+*.pyc
+.venv/

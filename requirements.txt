@@ -1,0 +1,7 @@
+proxmoxer>=2.0.1  # 2.0.0 ignores verify_ssl with API tokens
+requests>=2.31
+httpx>=0.27
+PyYAML>=6.0.1
+beautifulsoup4>=4.12
+ddgs>=9.0
+websockets>=13.0
