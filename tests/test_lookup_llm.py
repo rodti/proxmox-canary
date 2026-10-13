@@ -186,6 +186,30 @@ def test_diagnose_reports_full_context(ollama, caplog):
     assert len(ollama.chats) == 2
 
 
+def test_thinking_disabled_by_default(ollama):
+    ollama.mode = "thinker"
+    overview, diag = asyncio.run(Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b")).diagnose(findings(), {}))
+    assert diag and ollama.chats[0]["think"] is False and len(ollama.chats) == 1
+
+
+def test_thinking_enabled_explains_failure(ollama, caplog):
+    ollama.mode = "thinker"
+    d = Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b", think=True))
+    assert asyncio.run(d.diagnose(findings(), {})) is None
+    assert "spent its whole output budget thinking" in caplog.text
+
+
+def test_model_without_think_support(ollama, caplog):
+    caplog.set_level("INFO", logger="proxmox_canary")
+    ollama.mode = "no_think_support"
+    d = Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b"))
+    overview, diag = asyncio.run(d.diagnose(findings(), {}))
+    assert diag and len(ollama.rejected) == 1 and "think" not in ollama.chats[0]
+    assert "does not accept the think option" in caplog.text
+    asyncio.run(d.diagnose(findings(), {}))  # remembered: no second rejection
+    assert len(ollama.rejected) == 1
+
+
 def test_garbage_reply_is_logged(ollama, caplog):
     ollama.mode = "garbage"
     assert asyncio.run(Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b")).diagnose(findings(), {})) is None

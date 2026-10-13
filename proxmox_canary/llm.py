@@ -54,6 +54,7 @@ class Diagnoser:
     def __init__(self, cfg: OllamaConfig):
         self.cfg = cfg
         self.base = cfg.url.rstrip("/")
+        self._send_think = True  # cleared if this Ollama/model rejects the "think" field
 
     async def check_model(self) -> bool:
         """Warn early if Ollama is unreachable or the model has not been pulled."""
@@ -82,9 +83,17 @@ class Diagnoser:
 
     async def _chat(self, body: dict[str, Any]) -> dict[str, Any] | None:
         """One /api/chat call. Returns the parsed JSON object, or None (reason logged)."""
+        if not self._send_think:
+            body = {k: v for k, v in body.items() if k != "think"}
         try:
             async with httpx.AsyncClient(timeout=self.cfg.timeout) as client:
                 r = await client.post(f"{self.base}/api/chat", json=body)
+                if r.status_code == 400 and "think" in body and "thinking" in r.text.lower():
+                    # e.g. '"qwen2.5:14b" does not support thinking': send without the field.
+                    log.info("%s does not accept the think option; retrying without it", self.cfg.model)
+                    self._send_think = False
+                    body = {k: v for k, v in body.items() if k != "think"}
+                    r = await client.post(f"{self.base}/api/chat", json=body)
                 r.raise_for_status()
             resp = r.json()
             content = resp["message"]["content"]
@@ -104,6 +113,9 @@ class Diagnoser:
                         "Raise ollama.num_ctx (e.g. 16384) if the model supports it.",
                         prompt_tokens, self.cfg.num_ctx)
         thinking = (resp.get("message") or {}).get("thinking") or ""
+        if thinking and not content and resp.get("done_reason") == "length":
+            log.warning("%s spent its whole output budget thinking and never answered. "
+                        "Set ollama.think: false (the default), or raise ollama.num_ctx.", self.cfg.model)
         log.warning("Ollama's reply had no JSON object (done_reason=%s, %d chars%s). Start of reply: %r",
                     resp.get("done_reason"), len(content or ""),
                     f", plus {len(thinking)} chars of thinking" if thinking else "",
@@ -121,6 +133,7 @@ class Diagnoser:
             "stream": False,
             "format": "json",
             "keep_alive": self.cfg.keep_alive,
+            "think": self.cfg.think,
             "options": {"temperature": self.cfg.temperature, "num_ctx": self.cfg.num_ctx},
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},

@@ -63,6 +63,10 @@ On a Mac, run Ollama natively rather than in Docker so it can use the GPU. Any
 7–8B instruct model works; a 14B model gives noticeably better diagnoses if you
 have the memory. If Ollama is down, alerts still go out, just without the diagnosis.
 
+Thinking models (gemma4, qwen3, deepseek-r1 and similar) are asked not to think
+(`ollama.think: false`, the default). Otherwise they can use the whole context window
+reasoning and never write an answer. Models that can't think ignore the setting.
+
 ### 3. A Discord bot
 
 **Create the bot**

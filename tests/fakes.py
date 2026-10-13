@@ -249,8 +249,9 @@ class FakeOllama:
 
     def __init__(self, models=("qwen2.5:7b",)):
         self.models = list(models)
-        self.mode = "ok"  # ok | garbage | not_object | error | slow | hallucinate | fenced | thought | json_mode_empty | ctx_full
+        self.mode = "ok"  # ok | garbage | not_object | error | slow | hallucinate | fenced | thought | json_mode_empty | ctx_full | thinker | no_think_support
         self.chats: list[dict] = []
+        self.rejected: list[dict] = []
         self.server = _Server(self._handle)
         self.url = f"http://127.0.0.1:{self.server.port}"
 
@@ -270,6 +271,9 @@ class FakeOllama:
                 return send_json(h, 400, {"error": "; ".join(problems)})
             if req["model"] not in self.models:
                 return send_json(h, 404, {"error": f"model '{req['model']}' not found"})
+            if self.mode == "no_think_support" and "think" in req:
+                self.rejected.append(req)
+                return send_json(h, 400, {"error": f'"{req["model"]}" does not support thinking'})
             self.chats.append(req)
             if self.mode == "error":
                 return send_json(h, 500, {"error": "llama runner process has terminated"})
@@ -280,6 +284,10 @@ class FakeOllama:
             extra = {}
             if self.mode == "json_mode_empty" and req.get("format") == "json":
                 message = {"role": "assistant", "content": "", "thinking": "Let me look at the disks first..."}
+            if self.mode == "thinker" and req.get("think") is not False:
+                # Thinking on (Ollama's default for such models): reasons until out of room.
+                message = {"role": "assistant", "content": "", "thinking": "Let me consider each finding. " * 250}
+                extra = {"done_reason": "length"}
             if self.mode == "ctx_full":
                 message["content"] = ""
                 extra = {"prompt_eval_count": req["options"]["num_ctx"], "done_reason": "length"}
@@ -306,6 +314,8 @@ class FakeOllama:
         fmt = req.get("format")
         if fmt is not None and fmt != "json" and not isinstance(fmt, dict):
             p.append("format must be 'json' or a JSON schema")
+        if "think" in req and not isinstance(req["think"], (bool, str)):
+            p.append("think must be a boolean or a level string")
         ka = req.get("keep_alive")
         if ka is not None and not (isinstance(ka, (int, float)) or (isinstance(ka, str) and GO_DURATION.match(ka))):
             p.append(f"keep_alive {ka!r} is not a Go duration")
