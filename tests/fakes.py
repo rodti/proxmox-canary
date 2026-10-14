@@ -149,6 +149,8 @@ class FakeProxmox:
             return send_json(h, 200, {"data": sc["resources"]})
         if p == ["cluster", "tasks"]:
             return send_json(h, 200, {"data": sc["tasks"]})
+        if p == ["cluster", "backup"]:
+            return send_json(h, 200, {"data": sc.get("backup_jobs", [])})
         if len(p) >= 3 and p[0] == "nodes":
             node = p[1]
             rest = p[2:]

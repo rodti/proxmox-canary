@@ -34,6 +34,7 @@ initial_lookback_minutes: 60    # how far back the first run reads logs and task
 check_updates: false            # listing updates needs Sys.Modify, which is NOT read-only (see README)
 send_resolved: true             # post "All good" when a problem clears
 ignore_storage: []              # e.g. [usb-backup] for storage that is often offline on purpose
+ignore_backup_targets: true     # skip storage warnings for backup targets (critical-only if they also hold VM disks)
 ignore_guests: []               # VMIDs to skip for CPU/RAM checks, e.g. [105, 210]
 state_file: canary-state.json   # /data/canary-state.json in Docker
 

@@ -19,7 +19,7 @@ explains what the rules found and cites the pages it used, so it can't invent al
 |---|---|
 | Nodes | offline; CPU or RAM high for 3 checks in a row; root filesystem filling |
 | VMs and containers | CPU-bound or at their memory limit for 3 checks in a row |
-| Storage | over 80% / 90%; projected full within 7 days at the current growth rate; unavailable |
+| Storage | over 80% / 90%; projected full within 7 days at the current growth rate; unavailable (backup targets excluded, see Tuning) |
 | ZFS pools | any state other than ONLINE |
 | Disks | SMART health failing; SSD life remaining ≤ 10% |
 | Tasks | backups, migrations, snapshots etc. that failed or finished with warnings |
@@ -219,6 +219,12 @@ your node, guest, storage and pool names. Add your own patterns under
 
 ## Tuning
 
+- **Backup storage** fills and prunes by design, so backup targets are left out of
+  storage warnings. They're found automatically from your backup jobs, from Proxmox
+  Backup Server storage, and from storage that only holds backups. A target that also
+  holds VM/CT disks (e.g. `local-btrfs` or `local-zfs`) still alerts at
+  `storage_crit_pct`, since guests on it can stop if it fills. Failed backup jobs
+  always alert. Set `ignore_backup_targets: false` to watch them like any other storage.
 - **Too noisy?** Raise thresholds, add `ignore_guests` / `ignore_storage`, or add
   regexes to `logs.ignore`. Setting `logs.include`, `logs.critical` or
   `logs.ignore` replaces the built-in list for that key.

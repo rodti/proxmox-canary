@@ -22,6 +22,15 @@ from .issues import classify, successful_login
 
 log = logging.getLogger(__name__)
 
+# "--option value" pairs in logged commands, e.g. vzdump's "--mailnotification failure":
+# words there are settings, not errors.
+_CLI_OPTION = re.compile(r"(?<!\S)--[A-Za-z][\w-]*(?:[ =](?:'[^']*'|\"[^\"]*\"|(?!--)\S+))?")
+
+
+def _without_options(line: str) -> str:
+    return _CLI_OPTION.sub(" ", line)
+
+
 _CURSOR = re.compile(r"^s=[0-9a-f]+;i=[0-9a-f]+;")
 
 
@@ -43,6 +52,7 @@ class Snapshot:
     zfs_pools: list[dict[str, Any]] = field(default_factory=list)
     disks: list[dict[str, Any]] = field(default_factory=list)
     failed_tasks: list[dict[str, Any]] = field(default_factory=list)
+    backup_targets: set[str] = field(default_factory=set)  # storages backup jobs write to
     log_errors: dict[str, list[str]] = field(default_factory=dict)
     updates: dict[str, int] = field(default_factory=dict)
 
@@ -136,6 +146,13 @@ class Collector:
         for node in [n["node"] for n in snap.nodes if n.get("status") == "online"]:
             self._collect_node(snap, node, since)
 
+        if self.cfg.ignore_backup_targets:
+            jobs = self._optional("backup jobs", lambda: self.api.cluster.backup.get(), [], "Sys.Audit")
+            snap.backup_targets = {
+                str(j["storage"]) for j in jobs
+                if isinstance(j, dict) and j.get("storage") and str(j.get("enabled", 1)) not in ("0", "false")
+            }
+
         tasks = self._optional("tasks", lambda: self.api.cluster.tasks.get(), [], "Sys.Audit")
         for t in tasks:
             end, status = t.get("endtime"), t.get("status")
@@ -172,7 +189,7 @@ class Collector:
                 if classify(line) or successful_login(line):
                     # Kept in full (up to a sanity cap): a brute-force run is counted, not sampled.
                     recognised.append(line)
-                elif any(p.search(line) for p in self._include):
+                elif any(p.search(_without_options(line)) for p in self._include):
                     generic.append(line)
             matched = recognised[-50_000:] + generic[-self.cfg.logs.max_lines_per_node :]
             if matched:

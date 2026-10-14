@@ -160,6 +160,9 @@ class Config:
     check_updates: bool = False
     send_resolved: bool = True
     ignore_storage: list[str] = field(default_factory=list)
+    # Skip storage warnings for backup targets (found from backup jobs and storage content).
+    # A target that also holds VM/CT disks still alerts at storage_crit_pct.
+    ignore_backup_targets: bool = True
     ignore_guests: list[int] = field(default_factory=list)
     state_file: str = "canary-state.json"
 

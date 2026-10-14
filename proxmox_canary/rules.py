@@ -296,6 +296,21 @@ def _issue_finding(key: str, issue: dict[str, Any], cfg: Config, now: float) -> 
     return None
 
 
+def _backup_role(s: dict[str, Any], snap: Snapshot, cfg: Config) -> str:
+    """'backup-only', 'mixed' (backups plus VM/CT disks) or '' for ordinary storage."""
+    if not cfg.ignore_backup_targets:
+        return ""
+    content = {c.strip() for c in str(s.get("content") or "").split(",") if c.strip()}
+    is_target = (
+        s.get("storage") in snap.backup_targets
+        or s.get("plugintype") == "pbs"
+        or content == {"backup"}
+    )
+    if not is_target:
+        return ""
+    return "mixed" if content & {"images", "rootdir"} else "backup-only"
+
+
 # --------------------------------------------------------------------- rules
 
 
@@ -367,6 +382,9 @@ def evaluate(snap: Snapshot, cfg: Config, state: State) -> list[Finding]:
         name, node = s.get("storage", "?"), s.get("node", "?")
         sid = name if s.get("shared") else f"{node}/{name}"
         label = f"{name} (shared)" if s.get("shared") else f"{name} on {node}"
+        role = _backup_role(s, snap, cfg)
+        if role == "backup-only":
+            continue  # backups fill and prune by design; failed backup jobs still alert
         if s.get("status") != "available":
             out.append(Finding(
                 f"storage-unavailable:{sid}", WARNING, f"Storage {label} is unavailable",
@@ -379,11 +397,17 @@ def evaluate(snap: Snapshot, cfg: Config, state: State) -> list[Finding]:
             continue
         pct = _pct(used, total)
         sev = CRITICAL if pct >= t.storage_crit_pct else WARNING if pct >= t.storage_warn_pct else None
+        if role == "mixed" and sev == WARNING:
+            sev = None  # backup target that also holds guest disks: only alert when critical
         if sev:
             out.append(Finding(
                 f"storage-full:{sid}", sev, f"Storage {label} is {pct:.0f}% full",
-                f"{fmt_bytes(used)} of {fmt_bytes(total)} used, {fmt_bytes(total - used)} free.",
+                f"{fmt_bytes(used)} of {fmt_bytes(total)} used, {fmt_bytes(total - used)} free."
+                + (" It holds backups and VM/CT disks; if it fills, guests on it can stop. "
+                   "Prune old backups or move them elsewhere." if role == "mixed" else ""),
             ))
+        if role == "mixed":
+            continue  # nightly backups make the growth trend meaningless here
         trend = _days_to_full(state.record_trend(f"storage:{sid}", snap.taken_at, used, window_s), used, total)
         if trend and trend[0] <= t.storage_days_to_full:
             days, per_day, span_h = trend
