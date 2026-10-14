@@ -50,11 +50,23 @@ def _finding_payload(f: Finding, refs: list[dict[str, str]], ctx_lines: int, exc
     return item
 
 
+# Ways of asking, tried in order until one gives a usable answer. Most models answer
+# best with thinking off and Ollama's JSON mode; some return nothing at all with thinking
+# off (e.g. gemma4-style models) and only answer when allowed to think first, which needs
+# a bigger context window.
+ATTEMPTS: tuple[tuple[str, dict[str, Any], bool], ...] = (
+    ("thinking off and JSON mode", {"think": False, "format": "json"}, False),
+    ("thinking off", {"think": False}, False),
+    ("thinking on", {}, True),
+)
+
+
 class Diagnoser:
     def __init__(self, cfg: OllamaConfig):
         self.cfg = cfg
         self.base = cfg.url.rstrip("/")
         self._send_think = True  # cleared if this Ollama/model rejects the "think" field
+        self._first_attempt = 2 if cfg.think else 0  # moves to whichever approach worked last
 
     async def check_model(self) -> bool:
         """Warn early if Ollama is unreachable or the model has not been pulled."""
@@ -81,8 +93,11 @@ class Diagnoser:
                 return text
         return text[:MAX_PROMPT_CHARS]
 
-    async def _chat(self, body: dict[str, Any]) -> dict[str, Any] | None:
-        """One /api/chat call. Returns the parsed JSON object, or None (reason logged)."""
+    async def _chat(self, body: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+        """One /api/chat call: (parsed JSON object or None, whether to stop trying).
+
+        A timeout or a failed request stops the fallback chain; an unusable reply doesn't.
+        """
         if not self._send_think:
             body = {k: v for k, v in body.items() if k != "think"}
         try:
@@ -100,13 +115,13 @@ class Diagnoser:
         except httpx.TimeoutException:
             log.warning("Ollama did not answer within %ss. Raise ollama.timeout or use a smaller model.",
                         self.cfg.timeout)
-            return None
+            return None, True
         except (httpx.HTTPError, KeyError, TypeError, ValueError) as e:
             log.warning("Ollama request failed: %s", e)
-            return None
+            return None, True
         data = extract_json_object(content if isinstance(content, str) else "")
         if data is not None:
-            return data
+            return data, False
         prompt_tokens = resp.get("prompt_eval_count") or 0
         if prompt_tokens and prompt_tokens >= self.cfg.num_ctx - 256:
             log.warning("The prompt used %d of %d context tokens, leaving no room for an answer. "
@@ -120,7 +135,18 @@ class Diagnoser:
                     resp.get("done_reason"), len(content or ""),
                     f", plus {len(thinking)} chars of thinking" if thinking else "",
                     (content or "")[:300])
-        return None
+        # Ollama's own counters show whether the model ran at all.
+        stats = {k: resp.get(k) for k in ("done", "prompt_eval_count", "eval_count")}
+        for k in ("total_duration", "load_duration", "prompt_eval_duration", "eval_duration"):
+            if isinstance(resp.get(k), (int, float)):
+                stats[k] = f"{resp[k] / 1e9:.2f}s"  # nanoseconds
+        extra = sorted(set(resp) - {"model", "created_at", "message", "done", "done_reason", *stats})
+        log.warning("Ollama reply details: %s%s", stats, f"; other fields: {extra}" if extra else "")
+        if not content and not thinking and not resp.get("eval_count"):
+            log.warning("The model produced no tokens at all. Check the Ollama server log, and that "
+                        "this Ollama version supports %s (ollama -v; try `ollama run %s` directly).",
+                        self.cfg.model, self.cfg.model)
+        return None, False
 
     async def diagnose(
         self, findings: list[Finding], refs: dict[str, list[dict[str, str]]]
@@ -131,9 +157,7 @@ class Diagnoser:
         body = {
             "model": self.cfg.model,
             "stream": False,
-            "format": "json",
             "keep_alive": self.cfg.keep_alive,
-            "think": self.cfg.think,
             "options": {"temperature": self.cfg.temperature, "num_ctx": self.cfg.num_ctx},
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -143,12 +167,23 @@ class Diagnoser:
         log.info("Asking %s to diagnose %d finding(s); this can take a few minutes (timeout %ss)",
                  self.cfg.model, len(findings), self.cfg.timeout)
         started = time.monotonic()
-        data = await self._chat(body)
-        if data is None:
-            # Some models (e.g. those that emit a "thought" section) misbehave in Ollama's
-            # JSON mode. Try once more without it and pull the JSON out of the reply.
-            log.info("Retrying without JSON mode")
-            data = await self._chat({k: v for k, v in body.items() if k != "format"})
+        data = None
+        order = list(range(self._first_attempt, len(ATTEMPTS))) + list(range(self._first_attempt))
+        for n, i in enumerate(order):
+            label, extra, thinking = ATTEMPTS[i]
+            if n:
+                log.info("Retrying with %s", label)
+            attempt = {**body, **extra}
+            if thinking:
+                attempt["options"] = {**body["options"], "num_ctx": max(self.cfg.num_ctx, self.cfg.thinking_num_ctx)}
+            data, stop = await self._chat(attempt)
+            if data is not None:
+                if i != self._first_attempt:
+                    log.info("%s works with %s; using that first from now on", self.cfg.model, label)
+                    self._first_attempt = i
+                break
+            if stop:
+                break
         if data is None:
             log.warning("No usable diagnosis from %s; continuing without it", self.cfg.model)
             return None

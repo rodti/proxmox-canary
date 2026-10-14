@@ -176,14 +176,14 @@ def test_diagnose_retries_without_json_mode(ollama, caplog):
     overview, diag = asyncio.run(Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b")).diagnose(findings(), {}))
     assert diag and [c.get("format") for c in ollama.chats] == ["json", None]
     assert "no JSON object" in caplog.text and "chars of thinking" in caplog.text
-    assert "Retrying without JSON mode" in caplog.text
+    assert "Retrying with thinking off" in caplog.text
 
 
 def test_diagnose_reports_full_context(ollama, caplog):
     ollama.mode = "ctx_full"
     assert asyncio.run(Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b")).diagnose(findings(), {})) is None
     assert "Raise ollama.num_ctx" in caplog.text and "done_reason=length" in caplog.text
-    assert len(ollama.chats) == 2
+    assert len(ollama.chats) == 3  # every approach tried
 
 
 def test_thinking_disabled_by_default(ollama):
@@ -192,11 +192,12 @@ def test_thinking_disabled_by_default(ollama):
     assert diag and ollama.chats[0]["think"] is False and len(ollama.chats) == 1
 
 
-def test_thinking_enabled_explains_failure(ollama, caplog):
-    ollama.mode = "thinker"
+def test_thinking_enabled_falls_back_when_out_of_room(ollama, caplog):
+    ollama.mode = "thinker"  # thinks itself out of room whenever thinking is on
     d = Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b", think=True))
-    assert asyncio.run(d.diagnose(findings(), {})) is None
-    assert "spent its whole output budget thinking" in caplog.text
+    overview, diag = asyncio.run(d.diagnose(findings(), {}))
+    assert diag and "spent its whole output budget thinking" in caplog.text
+    assert [c.get("think") for c in ollama.chats] == [None, False]  # thinking first, as configured
 
 
 def test_model_without_think_support(ollama, caplog):
@@ -227,3 +228,40 @@ def test_prompt_is_bounded():
     big = [Finding(f"logs:n{i}:1", "warning", "t", "d", kind="event", context=["x" * 500] * 40) for i in range(30)]
     refs = {f.key: [{"id": "R1", "title": "t", "url": "u", "excerpt": "y" * 5000}] * 6 for f in big}
     assert len(Diagnoser(OllamaConfig(url="http://x", model="m"))._build_prompt(big, refs)) <= MAX_PROMPT_CHARS
+
+
+def test_empty_instant_reply_is_explained(ollama, caplog):
+    ollama.mode = "instant_empty"
+    assert asyncio.run(Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b")).diagnose(findings(), {})) is None
+    assert "'eval_count': 0" in caplog.text and "'total_duration': '0.05s'" in caplog.text
+    assert "produced no tokens at all" in caplog.text and "ollama -v" in caplog.text
+
+
+def test_model_that_only_answers_when_thinking(ollama, caplog):
+    """Returns nothing instantly with thinking off; needs thinking and a big context."""
+    caplog.set_level("INFO", logger="proxmox_canary")
+    ollama.mode = "gemma_like"
+    d = Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b"))
+    overview, diag = asyncio.run(d.diagnose(findings(), {}))
+    assert overview.startswith("Disk sdb is failing") and diag
+    assert [(c.get("think"), c.get("format"), c["options"]["num_ctx"]) for c in ollama.chats] == [
+        (False, "json", 12288), (False, None, 12288), (None, None, 32768)]
+    assert "produced no tokens at all" in caplog.text
+    assert "works with thinking on; using that first from now on" in caplog.text
+    # Next time it goes straight to what worked.
+    ollama.chats.clear()
+    assert asyncio.run(d.diagnose(findings(), {}))[1]
+    assert len(ollama.chats) == 1 and "think" not in ollama.chats[0]
+
+
+def test_timeout_stops_the_fallbacks(ollama):
+    ollama.mode = "slow"
+    d = Diagnoser(OllamaConfig(url=ollama.url, model="qwen2.5:7b", timeout=1))
+    assert asyncio.run(d.diagnose(findings(), {})) is None
+    assert len(ollama.chats) == 1  # not three slow attempts in a row
+
+
+def test_unreachable_stops_the_fallbacks(caplog):
+    d = Diagnoser(OllamaConfig(url="http://127.0.0.1:1", model="m"))
+    assert asyncio.run(d.diagnose(findings(), {})) is None
+    assert caplog.text.count("Ollama request failed") == 1

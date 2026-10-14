@@ -36,6 +36,9 @@ class OllamaConfig:
     # Thinking models (qwen3, deepseek-r1 and similar) can spend the whole context window
     # reasoning and never answer. Off by default; ignored by models that cannot think.
     think: bool = False
+    # Context window for the thinking fallback (and when think is true): room to reason
+    # first and still answer. Models that return nothing with thinking off need it.
+    thinking_num_ctx: int = 32768
 
 
 @dataclass

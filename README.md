@@ -84,9 +84,13 @@ have the memory. A GPU makes it much faster; if you run Ollama in a container, m
 sure the container can use it. If Ollama is down, alerts still go out, just without
 the diagnosis.
 
-Thinking models (qwen3, deepseek-r1 and similar) are asked not to think
-(`ollama.think: false`, the default). Otherwise they can use the whole context window
-reasoning and never write an answer. Models that can't think ignore the setting.
+Thinking models (qwen3, deepseek-r1 and similar) are first asked not to think
+(`ollama.think: false`, the default), since reasoning can fill the whole context window
+before any answer is written. Some models return nothing at all with thinking off, so
+if a reply is unusable the canary tries again without JSON mode, then with thinking on
+and a larger context window (`ollama.thinking_num_ctx`, default 32768). It remembers
+which approach worked and starts there next time. Models that can't think ignore the
+setting. Expect the thinking route to take a minute or two per check that has new alerts.
 
 ### 3. A Discord bot
 

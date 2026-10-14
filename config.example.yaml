@@ -20,8 +20,9 @@ ollama:
   temperature: 0.2
   num_ctx: 12288                   # context window; lookups make prompts long, so keep this ≥ 8192
   keep_alive: 10m
-  think: false                     # let thinking models (qwen3, deepseek-r1...) reason first; slower, and
-                                   # needs a larger num_ctx or they run out of room before answering
+  think: false                     # true: let thinking models (qwen3, deepseek-r1...) reason first (slower)
+  thinking_num_ctx: 32768          # context when thinking: room to reason and still answer. If a model
+                                   # returns nothing with thinking off, the canary falls back to this
 
 discord:
   token: CHANGE_ME              # bot token (Developer Portal → your app → Bot → Reset Token)

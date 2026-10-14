@@ -251,7 +251,7 @@ class FakeOllama:
 
     def __init__(self, models=("qwen2.5:7b",)):
         self.models = list(models)
-        self.mode = "ok"  # ok | garbage | not_object | error | slow | hallucinate | fenced | thought | json_mode_empty | ctx_full | thinker | no_think_support
+        self.mode = "ok"  # ok | garbage | not_object | error | slow | hallucinate | fenced | thought | json_mode_empty | ctx_full | thinker | no_think_support | gemma_like | instant_empty
         self.chats: list[dict] = []
         self.rejected: list[dict] = []
         self.server = _Server(self._handle)
@@ -290,6 +290,18 @@ class FakeOllama:
                 # Thinking on (Ollama's default for such models): reasons until out of room.
                 message = {"role": "assistant", "content": "", "thinking": "Let me consider each finding. " * 250}
                 extra = {"done_reason": "length"}
+            if self.mode == "gemma_like":
+                if req.get("think") is False:  # returns nothing at once
+                    message = {"role": "assistant", "content": ""}
+                    extra = {"done_reason": None, "eval_count": 0, "prompt_eval_count": 0, "total_duration": 90_000_000}
+                elif req["options"]["num_ctx"] < 32768:  # thinks until out of room
+                    message = {"role": "assistant", "content": "", "thinking": "Considering the findings. " * 300}
+                    extra = {"done_reason": "length"}
+                else:  # room to think, then answers
+                    message = {"role": "assistant", "content": content, "thinking": "Considering the findings. " * 300}
+            if self.mode == "instant_empty":
+                message["content"] = ""
+                extra = {"done_reason": None, "eval_count": 0, "prompt_eval_count": 0, "total_duration": 50_000_000}
             if self.mode == "ctx_full":
                 message["content"] = ""
                 extra = {"prompt_eval_count": req["options"]["num_ctx"], "done_reason": "length"}
