@@ -103,3 +103,17 @@ def test_backup_job_options_are_not_errors(pve, make_cfg):
 ])
 def test_without_options(line, kept):
     assert " ".join(_without_options(line).split()) == kept
+
+
+def test_tailscale_log_upload_failures_are_ignored(pve, make_cfg):
+    t = time.strftime("%b %d %H:%M:%S")
+    real = f"{t} pve1 tailscaled[812]: magicsock: failed to connect to derp-4: connection refused"
+    pve.scenario["journal"]["pve1"] = [
+        f"{t} pve1 tailscaled[812]: logtail: upload: log upload of 4123 bytes compressed failed: "
+        'Post "https://log.tailscale.io/c/tailnode.log.tailscale.io/abc": dial tcp: lookup log.tailscale.io: i/o timeout',
+        f'{t} pve1 tailscaled[812]: logtail: dial "log.tailscale.io:443" failed: dial tcp 192.0.2.5:443: connect: network is unreachable',
+        f"{t} pve1 tailscaled[812]: logtail: upload: log upload of 911 bytes failed: context deadline exceeded (Client.Timeout exceeded)",
+        real,
+    ]
+    snap = Collector(make_cfg(pve=pve)).collect(time.time() - 60)
+    assert snap.log_errors["pve1"] == [real]  # other Tailscale errors are still reported

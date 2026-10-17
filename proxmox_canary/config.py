@@ -96,6 +96,9 @@ DEFAULT_LOG_CRITICAL = [
 DEFAULT_LOG_IGNORE = [
     r"proxy detected vanished client connection",
     r"failed to load local private key \(key_file or key\) at",  # harmless spiceproxy noise on some setups
+    # Tailscale uploading its own diagnostic logs; failures don't affect the tailnet.
+    r"\btailscaled\b.*\blogtail\b",
+    r"\blog\.tailscale\.(?:io|com)\b",
 ]
 
 
